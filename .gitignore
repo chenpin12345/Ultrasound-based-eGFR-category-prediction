@@ -1,0 +1,48 @@
+.vscode/
+.idea/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+**/__pycache__/
+*.py[cod]
+
+# Local configuration and runtime state
+.env
+!.env.example
+data/
+logs/
+*.log
+*.pid
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Medical/research inputs and generated artifacts must remain local
+IMG/
+model/
+models/
+results/
+outputs/
+training/
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.zip
+*.pth
+*.pt
+*.pkl
+*.onnx
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/.offline-esbuild/
+frontend/dist/
+frontend/coverage/
+
+# Python/build outputs
+build/
+dist/
+*.egg-info/

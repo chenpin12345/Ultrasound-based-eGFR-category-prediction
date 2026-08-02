@@ -1,0 +1,15 @@
+services:
+  isu-ai-kua:
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ISU_AI_DATA_DIR: /workspace/data
+      ISU_AI_MODELS_DIR: /workspace/models
+      ISU_AI_CPU_WORKERS: "2"
+      ISU_AI_GPU_WORKERS: "1"
+    volumes:
+      - ./data:/workspace/data
+      - ./models:/workspace/models
+    restart: unless-stopped
