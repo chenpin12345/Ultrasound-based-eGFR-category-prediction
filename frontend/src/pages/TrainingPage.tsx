@@ -1,6 +1,6 @@
 import { AlertTriangle, BrainCircuit, CheckCircle2, Cpu, Gauge, Play, SlidersHorizontal, Zap } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, InlineNotice, PageHeader, StatePanel } from '../components/ui'
 import { useAsyncResource } from '../hooks/useAsyncResource'
 import { api, humanApiError, listItems } from '../lib/api'
@@ -22,26 +22,31 @@ function NumberField({ label, value, onChange, min, max, step = 1, error, help }
 
 export function TrainingPage() {
   const navigate = useNavigate()
-  const loadDatasets = useCallback(async () => listItems<Dataset>(await api.listDatasets()), [])
-  const datasets = useAsyncResource(loadDatasets)
-  const [config, setConfig] = useState<TrainingConfig>(DEFAULT_CONFIG)
+  const [workspaceParams, setWorkspaceParams] = useSearchParams()
+  const loadDatasets = useCallback(async (signal?: AbortSignal) => listItems<Dataset>(await api.listDatasets(signal)), [])
+  const datasets = useAsyncResource(loadDatasets, true, 'datasets')
+  const [config, setConfig] = useState<TrainingConfig>({ ...DEFAULT_CONFIG, dataset_id: workspaceParams.get('dataset_id') || '' })
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const selectedDataset = datasets.data?.find((item) => item.id === config.dataset_id)
   const summaryLoader = useCallback(() => api.getDatasetSummary(config.dataset_id), [config.dataset_id])
-  const summary = useAsyncResource(summaryLoader, Boolean(config.dataset_id))
+  const summary = useAsyncResource(summaryLoader, Boolean(config.dataset_id), `dataset-summary:${config.dataset_id}`)
 
   useEffect(() => {
-    if (!config.dataset_id && datasets.data?.length) setConfig((current) => ({ ...current, dataset_id: datasets.data![0].id }))
-  }, [config.dataset_id, datasets.data])
+    const id = workspaceParams.get('dataset_id') || ''
+    if (id !== config.dataset_id) setConfig(current => ({ ...current, dataset_id: id }))
+  }, [workspaceParams, config.dataset_id])
 
-  const update = <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => setConfig((current) => ({ ...current, [key]: value }))
+  const update = <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => {
+    if (key === 'dataset_id') setWorkspaceParams(current => { const next = new URLSearchParams(current); next.set('dataset_id', String(value)); next.delete('source_job'); next.delete('input'); return next })
+    else setConfig((current) => ({ ...current, [key]: value }))
+  }
   const validation = useMemo(() => validateTrainingConfig(config), [config])
   const startTraining = async () => {
     const currentErrors = validateTrainingConfig(config)
     setErrors(currentErrors)
-    if (Object.keys(currentErrors).length) return
+    if (Object.keys(currentErrors).length || !selectedDataset || busy) return
     setBusy(true); setError(null)
     try {
       const created = await api.createTrainingJob({ ...config, name: config.name?.trim() || `${selectedDataset?.name || '資料集'} · ${config.architecture}` })
@@ -68,7 +73,7 @@ export function TrainingPage() {
           <div className="flex items-center gap-2"><BrainCircuit className="h-5 w-5 text-clinical-600" /><h2 className="section-title">訓練設定</h2></div>
           <StatePanel loading={datasets.loading} error={datasets.error} onRetry={() => void datasets.refresh()} empty={!datasets.data?.length} emptyTitle="目前沒有可訓練的資料集" emptyDescription="請先到資料集管理匯入並完成驗證。">
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <label className="sm:col-span-2"><span className="label">資料集</span><select className={`field ${errors.dataset_id ? 'border-rose-400' : ''}`} value={config.dataset_id} onChange={(event) => update('dataset_id', event.target.value)}>{datasets.data?.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name} · {dataset.image_count ?? dataset.sample_count ?? 0} 張</option>)}</select>{errors.dataset_id && <span className="error-text block">{errors.dataset_id}</span>}</label>
+              <label className="sm:col-span-2"><span className="label">資料集</span><select className={`field ${errors.dataset_id ? 'border-rose-400' : ''}`} value={config.dataset_id} onChange={(event) => update('dataset_id', event.target.value)}><option value="">請選擇資料集</option>{config.dataset_id && !selectedDataset && <option value={config.dataset_id}>資料集不存在或載入中</option>}{datasets.data?.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name} · {dataset.image_count ?? dataset.sample_count ?? 0} 張</option>)}</select>{errors.dataset_id && <span className="error-text block">{errors.dataset_id}</span>}</label>
               <label><span className="label">模型架構</span><select className="field" value={config.architecture} onChange={(event) => update('architecture', event.target.value as TrainingConfig['architecture'])}><option value="resnet18">ResNet18</option><option value="mobilenet_v2">MobileNetV2</option><option value="efficientnet_b3">EfficientNetB3</option><option value="mlp_resnet18">MLP-ResNet18</option></select></label>
               <NumberField label="Epochs" value={config.epochs} min={1} max={1000} onChange={(value) => update('epochs', value)} error={errors.epochs} />
               <label className="sm:col-span-2"><span className="label">工作名稱（選填）</span><input className="field" value={config.name || ''} onChange={(event) => update('name', event.target.value)} placeholder={`${selectedDataset?.name || '資料集'} · ${config.architecture}`} /></label>
@@ -106,7 +111,7 @@ export function TrainingPage() {
               {summary.data?.warnings?.length ? <InlineNotice tone="warning" title="訓練前提醒"><ul className="list-disc pl-5">{summary.data.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></InlineNotice> : <InlineNotice tone="success"><span className="inline-flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />未發現資料摘要警告；後端仍會執行完整驗證。</span></InlineNotice>}
               {summary.data?.is_imbalanced && <InlineNotice tone="warning"><span className="inline-flex gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />資料類別不平衡，建議保留 class weights。</span></InlineNotice>}
             </div></StatePanel></Card>
-          <Card className="p-5 sm:p-6"><div className="flex items-center gap-2"><Gauge className="h-5 w-5 text-clinical-600" /><h2 className="section-title">送出訓練</h2></div><p className="mt-2 text-sm leading-6 text-slate-500">送出後 HTTP 請求會立即返回，訓練留在背景執行。請勿重複點擊；後端亦應以設定指紋避免重複工作。</p>{Object.keys(validation).length > 0 && <div className="mt-4"><InlineNotice tone="warning">尚有 {Object.keys(validation).length} 項設定需要修正。</InlineNotice></div>}{error && <div className="mt-4"><InlineNotice tone="danger">{error}</InlineNotice></div>}<button className="btn-primary mt-5 w-full" disabled={!datasets.data?.length || busy || Object.keys(validation).length > 0} onClick={() => void startTraining()}><Play className="h-4 w-4" />{busy ? '建立訓練工作中…' : '開始訓練'}</button></Card>
+          <Card className="p-5 sm:p-6"><div className="flex items-center gap-2"><Gauge className="h-5 w-5 text-clinical-600" /><h2 className="section-title">送出訓練</h2></div><p className="mt-2 text-sm leading-6 text-slate-500">送出後 HTTP 請求會立即返回，訓練留在背景執行。請勿重複點擊；後端亦應以設定指紋避免重複工作。</p>{Object.keys(validation).length > 0 && <div className="mt-4"><InlineNotice tone="warning">尚有 {Object.keys(validation).length} 項設定需要修正。</InlineNotice></div>}{error && <div className="mt-4"><InlineNotice tone="danger">{error}</InlineNotice></div>}<button className="btn-primary mt-5 w-full" disabled={!selectedDataset || busy || Object.keys(validation).length > 0} onClick={() => void startTraining()}><Play className="h-4 w-4" />{busy ? '建立訓練工作中…' : '開始訓練'}</button></Card>
         </div>
       </div>
     </div>

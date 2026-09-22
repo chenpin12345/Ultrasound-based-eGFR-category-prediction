@@ -6,27 +6,27 @@ import { FilePreviewGallery } from '../components/PreviewGallery'
 import { Card, InlineNotice, PageHeader, ProgressBar, StatePanel, StatCard, StatusBadge, SuccessMessage } from '../components/ui'
 import { useAsyncResource } from '../hooks/useAsyncResource'
 import { useJobEvents } from '../hooks/useJobEvents'
-import { api, humanApiError, listItems } from '../lib/api'
+import { api, humanApiError, listItems, requestJson } from '../lib/api'
 import { formatDate, jobIdOf, normalizeProgress } from '../lib/format'
-import type { Dataset, Job, ModelInfo } from '../types/api'
+import type { Job, ModelInfo } from '../types/api'
 
 export function DashboardPage() {
   const loadHealth = useCallback(() => api.health(), [])
-  const loadDatasets = useCallback(async () => listItems<Dataset>(await api.listDatasets()), [])
-  const loadJobs = useCallback(async () => listItems<Job>(await api.listJobs()), [])
-  const loadModels = useCallback(async () => listItems<ModelInfo>(await api.listModels()), [])
+  const loadJobs = useCallback(async (signal?: AbortSignal) => listItems<Job>(await api.listJobs(signal)), [])
+  const loadModels = useCallback(async (signal?: AbortSignal) => listItems<ModelInfo>(await api.listModels(signal)), [])
+  const loadCounts = useCallback((signal?: AbortSignal) => requestJson<{datasets: number; models: number; active_jobs: number}>('/workflow/dashboard-summary', {signal}), [])
+  const counts = useAsyncResource(loadCounts, true, 'dashboard-summary')
   const health = useAsyncResource(loadHealth)
-  const datasets = useAsyncResource(loadDatasets)
-  const jobs = useAsyncResource(loadJobs)
-  const models = useAsyncResource(loadModels)
+  const jobs = useAsyncResource(loadJobs, true, 'jobs')
+  const models = useAsyncResource(loadModels, true, 'models')
   const [files, setFiles] = useState<File[]>([])
   const [quickJob, setQuickJob] = useState<Job>()
   const [quickBusy, setQuickBusy] = useState(false)
   const [quickError, setQuickError] = useState<string | null>(null)
-  const eventStream = useJobEvents(quickJob ? api.jobEventsUrl(jobIdOf(quickJob)) : undefined, Boolean(quickJob))
+  const eventStream = useJobEvents(quickJob ? api.jobEventsUrl(jobIdOf(quickJob)) : undefined, Boolean(quickJob) && !['completed','failed','stopped','interrupted','cancelled'].includes(quickJob?.status || ''))
   const latestProgress = normalizeProgress(eventStream.latest?.progress ?? quickJob?.progress)
   const recentJobs = useMemo(() => [...(jobs.data || [])].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 5), [jobs.data])
-  const runningCount = (jobs.data || []).filter((job) => ['queued', 'running', 'stopping'].includes(job.status)).length
+  const runningCount = counts.data?.active_jobs ?? '—'
   const isActive = (model: ModelInfo) => Boolean(model.is_active ?? model.is_default ?? model.active)
   const modelReady = (models.data || []).some((model) => isActive(model) && (model.task === 'segmentation' || `${model.architecture} ${model.name}`.toLowerCase().includes('unet')))
     && (models.data || []).some((model) => isActive(model) && (model.task === 'classification' || (model.task === undefined && !`${model.architecture} ${model.name}`.toLowerCase().includes('unet'))))
@@ -56,8 +56,8 @@ export function DashboardPage() {
       <PageHeader title="研究儀表板" description="從單一工作台掌握本機資料集、模型與背景工作，或直接開始一次完整影像分析。" />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="服務狀態" value={health.loading ? '檢查中' : health.data?.status === 'ok' || health.data?.status === 'healthy' ? '正常' : '需檢查'} hint={health.data?.database ? `資料庫：${health.data.database}` : '本機 FastAPI'} icon={<Activity className="h-5 w-5" />} />
-        <StatCard label="資料集" value={datasets.data?.length ?? '—'} hint="已匯入研究資料" icon={<Database className="h-5 w-5" />} />
-        <StatCard label="可用模型" value={models.data?.length ?? '—'} hint={modelReady ? '遮罩與分類模型均已就緒' : '快速分析所需模型未齊'} icon={<BrainCircuit className="h-5 w-5" />} />
+        <StatCard label="資料集" value={counts.data?.datasets ?? '—'} hint="已匯入研究資料" icon={<Database className="h-5 w-5" />} />
+        <StatCard label="可用模型" value={counts.data?.models ?? '—'} hint={modelReady ? '遮罩與分類模型均已就緒' : '快速分析所需模型未齊'} icon={<BrainCircuit className="h-5 w-5" />} />
         <StatCard label="進行中工作" value={runningCount} hint="包含排隊與停止中" icon={<HardDrive className="h-5 w-5" />} />
       </div>
 

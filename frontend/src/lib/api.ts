@@ -1,3 +1,4 @@
+import { invalidateResources } from './resourceCache'
 import type {
   ApiEnvelope,
   ApiErrorBody,
@@ -106,7 +107,7 @@ function normalizeJob(item: Job & { config_json?: Record<string, unknown>; resul
     name: item.name ?? (typeof item.config_json?.name === 'string' ? item.config_json.name : undefined),
     config: item.config ?? item.config_json,
     finished_at: item.finished_at ?? item.completed_at,
-    result_count: item.result_count ?? (Array.isArray(item.result_json?.items) ? item.result_json.items.length : undefined),
+    result_count: item.result_count ?? (Array.isArray(item.result_json?.items) ? item.result_json.items.length : Array.isArray((item.result_json?.inference as Record<string, unknown>)?.items) ? ((item.result_json!.inference as Record<string, unknown>).items as unknown[]).length : undefined),
   }
 }
 
@@ -130,17 +131,17 @@ function normalizeTraining(item: TrainingJob & { model_name?: string; best_metri
 
 const EGFR_CLASS_NAMES = ['eGFR < 15', 'eGFR 15–29', 'eGFR 30–59', 'eGFR 60–89', 'eGFR ≥ 90']
 
-function normalizeInferenceResult(item: Record<string, any>): InferenceResult {
+function normalizeInferenceResult(item: Record<string, any>, labels: string[] = EGFR_CLASS_NAMES): InferenceResult {
   const predictedIndex = Number(item.predicted_index ?? item.class_index)
   const rawProbabilities = item.probabilities
   const probabilities = Array.isArray(rawProbabilities) && rawProbabilities.every((value) => typeof value === 'number')
-    ? rawProbabilities.map((probability, classIndex) => ({ class_index: classIndex, class_name: EGFR_CLASS_NAMES[classIndex] || `Class ${classIndex}`, probability }))
+    ? rawProbabilities.map((probability, classIndex) => ({ class_index: classIndex, class_name: labels[classIndex] || `Class ${classIndex}`, probability }))
     : rawProbabilities
   return {
     ...item,
     file_name: item.file_name ?? item.file ?? item.filename ?? '未命名影像',
     predicted_index: Number.isFinite(predictedIndex) ? predictedIndex : undefined,
-    predicted_class: item.predicted_class ?? (Number.isFinite(predictedIndex) ? EGFR_CLASS_NAMES[predictedIndex] : undefined) ?? '未分類',
+    predicted_class: item.predicted_class ?? (Number.isFinite(predictedIndex) ? labels[predictedIndex] : undefined) ?? '未分類',
     confidence: Number(item.confidence ?? 0),
     probabilities: probabilities ?? [],
   }
@@ -207,17 +208,30 @@ export async function requestJson<T>(path: string, init: RequestInit = {}): Prom
     headers.set('Content-Type', 'application/json')
   }
   headers.set('Accept', 'application/json')
-  const response = await fetch(apiUrl(path), { ...init, headers })
+  const readonly = !init.method || init.method.toUpperCase() === 'GET'
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  init.signal?.addEventListener('abort', cancel, {once: true})
+  if (init.signal?.aborted) controller.abort()
+  const timer = readonly ? setTimeout(cancel, 15_000) : undefined
+  try {
+  const response = await fetch(apiUrl(path), { ...init, headers, signal: controller.signal })
   const contentType = response.headers.get('content-type') || ''
   const body: unknown = contentType.includes('application/json')
     ? await response.json().catch(() => undefined)
     : await response.text().catch(() => undefined)
+  if (controller.signal.aborted) throw new DOMException('Request aborted', 'AbortError')
   if (!response.ok) {
     const parsed = errorBody(body)
     throw new ApiClientError(parsed?.message || `伺服器回應錯誤（${response.status}）`, response.status, parsed)
   }
+  if (!readonly) invalidateResources()
   if (response.status === 204) return undefined as T
   return unwrapPayload(body as T | ApiEnvelope<T>)
+  } catch (error) {
+    if (readonly && controller.signal.aborted && !init.signal?.aborted) throw new Error('讀取資料超過 15 秒，請重試；已提交的 AI 工作不受影響。')
+    throw error
+  } finally { clearTimeout(timer); init.signal?.removeEventListener('abort', cancel) }
 }
 
 function jsonBody(value: unknown): BodyInit {
@@ -231,12 +245,12 @@ export const api = {
   updateSettings: (settings: SystemSettings) =>
     requestJson<SystemSettings>('/settings', { method: 'PUT', body: jsonBody(settings) }),
 
-  listDatasets: async () => mapCollection(await requestJson<Dataset[] | PageResult<Dataset>>('/datasets'), normalizeDataset),
+  listDatasets: async (signal?: AbortSignal) => mapCollection(await requestJson<Dataset[] | PageResult<Dataset>>('/datasets', {signal}), normalizeDataset),
   createDataset: async (form: FormData) => normalizeDataset(await requestJson<Dataset>('/datasets', { method: 'POST', body: form })),
   getDataset: async (id: string) => normalizeDataset(await requestJson<Dataset>(`/datasets/${encodeURIComponent(id)}`)),
-  getDatasetSummary: async (id: string) => normalizeDatasetSummary(await requestJson<DatasetSummary>(`/datasets/${encodeURIComponent(id)}/summary`)),
+  getDatasetSummary: async (id: string, signal?: AbortSignal) => normalizeDatasetSummary(await requestJson<DatasetSummary>(`/datasets/${encodeURIComponent(id)}/summary`, {signal})),
   datasetSummaryDownloadUrl: (id: string) => apiUrl(`/datasets/${encodeURIComponent(id)}/summary?download=1`),
-  getDatasetSamples: async (id: string, query = '') => mapCollection(await requestJson<DatasetSample[] | PageResult<DatasetSample>>(`/datasets/${encodeURIComponent(id)}/samples${query}`), normalizeDatasetSample),
+  getDatasetSamples: async (id: string, query = '', signal?: AbortSignal) => mapCollection(await requestJson<DatasetSample[] | PageResult<DatasetSample>>(`/datasets/${encodeURIComponent(id)}/samples${query}`, {signal}), normalizeDatasetSample),
   getDatasetIssues: (id: string, query = '') => requestJson<DatasetImportIssue[] | PageResult<DatasetImportIssue>>(`/datasets/${encodeURIComponent(id)}/issues${query}`),
   deleteDataset: (id: string) => requestJson<void>(`/datasets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
@@ -245,8 +259,15 @@ export const api = {
       method: 'POST',
       body: form instanceof FormData ? form : jsonBody(form),
     })),
-  listJobs: async () => mapCollection(await requestJson<Job[] | PageResult<Job>>('/jobs'), normalizeJob),
-  getJob: async (id: string) => normalizeJob(await requestJson<Job>(`/jobs/${encodeURIComponent(id)}`)),
+  listJobs: async (signal?: AbortSignal) => {
+    const items: Job[] = []; let offset = 0
+    while (true) {
+      const page = await requestJson<PageResult<Job>>(`/jobs?view=summary&limit=200&offset=${offset}`, {signal})
+      items.push(...page.items.map(normalizeJob)); offset += page.items.length
+      if (!page.items.length || offset >= (page.total ?? offset)) return {items, total: page.total}
+    }
+  },
+  getJob: async (id: string, signal?: AbortSignal) => normalizeJob(await requestJson<Job>(`/jobs/${encodeURIComponent(id)}?view=summary`, {signal})),
   startProcess: (id: string, config: Record<string, unknown>) =>
     requestJson<Job>(`/jobs/${encodeURIComponent(id)}/process`, { method: 'POST', body: jsonBody({ config }) }),
   startMasks: (id: string, config: Record<string, unknown>) =>
@@ -255,13 +276,15 @@ export const api = {
     requestJson<Job>(`/jobs/${encodeURIComponent(id)}/features`, { method: 'POST', body: jsonBody({ config }) }),
   startInference: (id: string, config: Record<string, unknown>) =>
     requestJson<Job>(`/jobs/${encodeURIComponent(id)}/inference`, { method: 'POST', body: jsonBody({ config }) }),
-  getJobResults: async (id: string) => {
-    const raw = await requestJson<Record<string, any>>(`/jobs/${encodeURIComponent(id)}/results`)
-    const nested = raw.results
-    if (Array.isArray(nested)) return { job_id: raw.job_id, results: nested.map(normalizeInferenceResult) } as JobResults
+  getJobResults: async (id: string, page?: number, signal?: AbortSignal) => {
+    const query = page === undefined ? '' : `?offset=${page*60}&limit=60`
+    const raw = await requestJson<Record<string, any>>(`/jobs/${encodeURIComponent(id)}/results${query}`, {signal})
+    const nested = raw.results?.inference ? { ...raw.results, ...raw.results.inference } : raw.results
+    if (Array.isArray(nested)) return { job_id: raw.job_id, results: nested.map(item => normalizeInferenceResult(item)) } as JobResults
     const result = { job_id: raw.job_id, ...(nested && typeof nested === 'object' ? nested : {}) } as JobResults
-    if (Array.isArray(result.results)) result.results = result.results.map((item) => normalizeInferenceResult(item as unknown as Record<string, any>))
-    if (Array.isArray(result.items)) result.items = result.items.map((item) => normalizeInferenceResult(item as unknown as Record<string, any>))
+    const labels: string[] = Array.isArray(nested?.class_names) ? nested.class_names : EGFR_CLASS_NAMES
+    if (Array.isArray(result.results)) result.results = result.results.map((item) => normalizeInferenceResult(item as unknown as Record<string, any>, labels))
+    if (Array.isArray(result.items)) result.items = result.items.map((item) => normalizeInferenceResult(item as unknown as Record<string, any>, labels))
     const summary = nested && typeof nested === 'object' ? (nested as Record<string, any>).summary : undefined
     if (!result.statistics && summary?.counts) result.statistics = summary.counts
     return result
@@ -315,7 +338,7 @@ export const api = {
   },
   trainingEventsUrl: (id: string) => apiUrl(`/training/jobs/${encodeURIComponent(id)}/events`),
 
-  listModels: async () => mapCollection(await requestJson<ModelInfo[] | PageResult<ModelInfo>>('/models'), normalizeModel),
+  listModels: async (signal?: AbortSignal) => mapCollection(await requestJson<ModelInfo[] | PageResult<ModelInfo>>('/models?limit=200', {signal}), normalizeModel),
   getModel: async (id: string) => normalizeModel(await requestJson<ModelInfo>(`/models/${encodeURIComponent(id)}`)),
   importModel: async (form: FormData) => normalizeModel(await requestJson<ModelInfo>('/models', { method: 'POST', body: form })),
   renameModel: async (id: string, name: string) => normalizeModel(await requestJson<ModelInfo>(`/models/${encodeURIComponent(id)}`, {

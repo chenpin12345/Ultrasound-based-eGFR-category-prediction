@@ -179,12 +179,13 @@ def build_classifier(
                     nn.BatchNorm1d(32),
                     nn.Dropout(0.3),
                 )
-                self.classifier = nn.Linear(288, num_classes)
+                self.classifier = nn.Linear(288, 1 if num_classes == 2 else num_classes)
 
             def forward(self, image, metadata):
                 image_features = self.feature_mlp(self.backbone(image))
                 metadata_features = self.meta_mlp(metadata)
-                return self.classifier(torch.cat([image_features, metadata_features], dim=1))
+                logits = self.classifier(torch.cat([image_features, metadata_features], dim=1))
+                return logits.squeeze(-1) if num_classes == 2 else logits
 
         return MLPClassifier()
 
@@ -198,11 +199,12 @@ def build_classifier(
                 nn.ReLU(),
                 nn.BatchNorm1d(256),
                 nn.Dropout(0.5),
-                nn.Linear(256, num_classes),
+                nn.Linear(256, 1 if num_classes == 2 else num_classes),
             )
 
         def forward(self, image):
-            return self.classifier(self.backbone(image))
+            logits = self.classifier(self.backbone(image))
+            return logits.squeeze(-1) if num_classes == 2 else logits
 
     return BasicResNetClassifier()
 
@@ -246,8 +248,11 @@ def load_classifier(
     *,
     device: Any = "cpu",
     coral: bool = False,
+    num_classes: int = CLASS_COUNT,
 ):
-    model = build_classifier(architecture, coral=coral)
+    if num_classes not in (2, 3, 5):
+        raise ModelCompatibilityError("Unsupported classification scheme.")
+    model = build_classifier(architecture, coral=coral, num_classes=num_classes)
     state = load_state_dict_file(path, device)
     try:
         model.load_state_dict(state, strict=True)
@@ -283,4 +288,3 @@ def image_transform():
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ]
     )
-

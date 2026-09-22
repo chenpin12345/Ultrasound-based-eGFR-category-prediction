@@ -8,6 +8,7 @@ import { FeaturesPage } from './pages/FeaturesPage'
 import { TrainingPage } from './pages/TrainingPage'
 import { TrainingMonitorPage } from './pages/TrainingMonitorPage'
 import { InferencePage } from './pages/InferencePage'
+import { JudgmentPage } from './pages/JudgmentPage'
 import { ModelsPage } from './pages/ModelsPage'
 import { JobsPage } from './pages/JobsPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -25,6 +26,7 @@ export function App() {
         <Route path="training/monitor" element={<TrainingMonitorPage />} />
         <Route path="training/:jobId" element={<TrainingMonitorPage />} />
         <Route path="inference" element={<InferencePage />} />
+        <Route path="ai-judgment" element={<JudgmentPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="settings" element={<SettingsPage />} />

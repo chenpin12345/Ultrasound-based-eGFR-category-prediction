@@ -77,7 +77,8 @@ def create_app() -> FastAPI:
         return response
 
     install_error_handlers(app)
-    for router in (system_router, datasets_router, jobs_router, training_router, models_router):
+    from .api.routes.workflow import router as workflow_router
+    for router in (system_router, workflow_router, datasets_router, jobs_router, training_router, models_router):
         app.include_router(router, prefix=settings.api_prefix)
 
     if settings.frontend_dist.is_dir() and (settings.frontend_dist / "index.html").is_file():

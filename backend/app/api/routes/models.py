@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ...core.config import AppSettings, get_settings
 from ...core.errors import AppError
 from ...core.security import relative_path, remove_tree_contained, safe_resolve, sanitize_filename, save_upload_file
-from ...db.models import ModelRecord, uuid_str
+from ...db.models import Job, ModelRecord, uuid_str
 from ...db.session import get_db
 from ...schemas.common import Page
 from ...schemas.model import ModelManifest, ModelOut, ModelRename
@@ -55,14 +55,20 @@ def _validate_manifest(manifest: ModelManifest) -> None:
         raise AppError(422, "CLASS_SCHEMA_MISMATCH", "class_names 數量必須等於 class_count。")
     if len(set(manifest.class_names)) != len(manifest.class_names):
         raise AppError(422, "DUPLICATE_CLASS_NAME", "類別名稱不可重複。")
-    if manifest.task == "classification" and manifest.class_count != 5:
-        raise AppError(422, "CLASS_SCHEMA_MISMATCH", "分類模型必須維持固定五級 eGFR 輸出。")
+    if manifest.task == "classification" and manifest.class_count not in (2, 3, 5):
+        raise AppError(422, "CLASS_SCHEMA_MISMATCH", "分類模型僅支援二、三、五級 eGFR 輸出。")
     if manifest.task == "segmentation" and manifest.class_count != 2:
         raise AppError(422, "CLASS_SCHEMA_MISMATCH", "UNet 必須維持背景／前景兩類輸出。")
     if "mlp" in manifest.architecture.lower() and manifest.metadata_columns != [
         "age", "Length_px", "Contrast_Ratio", "has_diabetes"
     ]:
         raise AppError(422, "METADATA_SCHEMA_MISMATCH", "MLP-ResNet18 metadata 欄位或順序不相容。")
+    if manifest.task == "classification":
+        from ...ml.contracts import ModelMetadata
+        try:
+            ModelMetadata.from_dict(manifest.model_dump())
+        except (ValueError, TypeError, KeyError) as exc:
+            raise AppError(422, "INVALID_MODEL_METADATA", "模型配套設定不相容。") from exc
 
 
 def _validate_weights_only(path: Path) -> None:
@@ -94,7 +100,7 @@ def _validate_model_compatibility(path: Path, manifest: ModelManifest) -> None:
             from ...ml.models import load_classifier
 
             architecture, coral = canonical_classifier_name(manifest.architecture)
-            model = load_classifier(path, architecture, device="cpu", coral=coral)
+            model = load_classifier(path, architecture, device="cpu", coral=coral, num_classes=manifest.class_count)
         del model
     except Exception as exc:
         raise AppError(422, "MODEL_ARCHITECTURE_MISMATCH", "權重與指定的模型架構不相容。") from exc
@@ -247,6 +253,10 @@ def delete_model(model_id: str, db: Session = Depends(get_db), settings: AppSett
         raise AppError(404, "MODEL_NOT_FOUND", "找不到指定模型。")
     if model.active:
         raise AppError(409, "MODEL_ACTIVE", "請先啟用其他模型，再刪除此模型。")
+    for job in db.scalars(select(Job).where(Job.status.in_(["queued", "running", "stopping"]))):
+        config = job.config_json or {}
+        if any(config.get(key) == model.weights_path for key in ("model_path", "classifier_model_path", "unet_model_path")):
+            raise AppError(409, "MODEL_IN_USE", "此模型仍被進行中的工作使用，無法刪除。")
     weights_path = safe_resolve(settings.models_dir, model.weights_path)
     metadata_path = safe_resolve(settings.models_dir, model.metadata_path)
     # Imported models live under models/{model_id}; trained models live under

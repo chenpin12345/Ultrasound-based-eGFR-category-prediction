@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 import socket
 import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+
+def test_windows_launchers_keep_crlf_and_absolute_server_identity():
+    root = Path(__file__).resolve().parents[2]
+    for name in ('start.bat', 'stop.bat', 'setup.bat'):
+        data = (root / name).read_bytes()
+        assert b'\r\n' in data
+        assert b'\n' not in data.replace(b'\r\n', b'')
+    assert '"%~dp0scripts\\run_server.py"' in (root / 'start.bat').read_text(encoding='utf-8')
 
 
 def test_find_port_skips_an_occupied_loopback_port():

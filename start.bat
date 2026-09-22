@@ -16,7 +16,7 @@ if not exist "frontend\dist\index.html" (
 )
 
 echo 啟動 ISU AI KUA 本機服務...
-".venv\Scripts\python.exe" scripts\run_server.py
+"%~dp0.venv\Scripts\python.exe" "%~dp0scripts\run_server.py"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (

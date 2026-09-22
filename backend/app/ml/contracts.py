@@ -35,6 +35,25 @@ CLASS_DIR_TO_INDEX: dict[str, int] = {
 }
 CLASS_SHORT_NAMES = ("<15", "15–29", "30–59", "60–89", "≥90")
 
+# Inference-only schemes. Training keeps its existing CLASS_COUNT/defaults.
+CLASSIFICATION_SCHEMES = {
+    2: {0: "eGFR < 60", 1: "eGFR ≥ 60"},
+    3: {0: "eGFR < 30", 1: "eGFR 30–59", 2: "eGFR ≥ 60"},
+    5: CLASS_NAMES,
+}
+
+
+def classification_labels(class_count: int) -> dict[int, str]:
+    if class_count not in CLASSIFICATION_SCHEMES:
+        raise ValueError("Classification supports 2, 3 or 5 classes.")
+    return dict(CLASSIFICATION_SCHEMES[class_count])
+
+
+def remap_five_class(index: int, class_count: int) -> int:
+    if index not in range(5):
+        raise ValueError("Invalid original five-class label.")
+    return {2: (0, 0, 0, 1, 1), 3: (0, 0, 1, 2, 2), 5: (0, 1, 2, 3, 4)}[class_count][index]
+
 IMAGE_SIZE = (224, 224)
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -188,12 +207,16 @@ class ModelMetadata:
     image_mode: str = "RGB"
     normalization_mean: Sequence[float] = IMAGENET_MEAN
     normalization_std: Sequence[float] = IMAGENET_STD
+    class_count: int = CLASS_COUNT
 
     def __post_init__(self) -> None:
         architecture, prefixed_coral = canonical_classifier_name(self.architecture)
         object.__setattr__(self, "architecture", architecture)
         if prefixed_coral:
             object.__setattr__(self, "coral", True)
+        labels = classification_labels(self.class_count)
+        if self.class_names is not None and set(self.class_names) != set(labels):
+            raise ContractError("Class indices do not match the model class count.")
         if tuple(self.metadata_fields) != METADATA_FIELDS:
             raise ContractError("Model metadata field order does not match the fixed contract.")
         if tuple(self.image_size) != IMAGE_SIZE or self.image_mode != "RGB":
@@ -203,8 +226,8 @@ class ModelMetadata:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["created_at"] = self.created_at or utc_now_iso()
-        payload["class_names"] = dict(self.class_names or CLASS_NAMES)
-        payload["legacy_class_names"] = dict(self.legacy_class_names or LEGACY_CLASS_NAMES)
+        payload["class_names"] = dict(self.class_names or classification_labels(self.class_count))
+        payload["legacy_class_names"] = dict(self.legacy_class_names or (LEGACY_CLASS_NAMES if self.class_count == 5 else classification_labels(self.class_count)))
         payload["metadata_fields"] = list(METADATA_FIELDS)
         payload["train_stats"] = validate_train_stats(self.train_stats)
         payload["image_size"] = list(IMAGE_SIZE)
@@ -225,6 +248,7 @@ class ModelMetadata:
         architecture, prefixed_coral = canonical_classifier_name(str(payload["architecture"]))
         return cls(
             architecture=architecture,
+            class_count=int(payload.get("class_count", CLASS_COUNT)),
             dataset_id=payload.get("dataset_id"),
             created_at=str(payload.get("created_at") or ""),
             best_metric=payload.get("best_metric"),

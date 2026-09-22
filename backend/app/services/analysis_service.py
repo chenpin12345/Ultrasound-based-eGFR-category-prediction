@@ -105,6 +105,10 @@ def run_quick_analysis(
     from ..ml.segmentation import generate_masks
 
     config = dict(config or {})
+    if config.get("analysis_mode") in {"mlp", "image_only"}:
+        from .judgment_service import run_judgment
+        return run_judgment(image_paths, workspace=workspace, data_root=data_root,
+                            models_root=models_root, config=config, progress=progress)
     data_root = Path(data_root).resolve()
     models_root = Path(models_root).resolve()
     features_root = Path(features_root).resolve()

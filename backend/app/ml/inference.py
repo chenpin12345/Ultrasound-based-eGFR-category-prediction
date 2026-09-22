@@ -18,6 +18,7 @@ from .contracts import (
     ModelMetadata,
     metadata_path_for_weights,
     normalize_metadata,
+    classification_labels,
 )
 from .features import metadata_by_name
 from .models import (
@@ -57,10 +58,12 @@ class InferenceReport:
     items: list[InferenceItem] = field(default_factory=list)
     csv_path: Path | None = None
     zip_path: Path | None = None
+    class_names: dict[int, str] = field(default_factory=lambda: dict(CLASS_NAMES))
+    class_count: int = 5
 
     def summary(self) -> dict[str, Any]:
-        counts = {name: 0 for name in CLASS_NAMES.values()}
-        confidence: dict[str, list[float]] = {name: [] for name in CLASS_NAMES.values()}
+        counts = {name: 0 for name in self.class_names.values()}
+        confidence: dict[str, list[float]] = {name: [] for name in self.class_names.values()}
         for item in self.items:
             # Legacy manifests can carry valid display-label spellings that are
             # not byte-for-byte equal to the current canonical labels. Preserve
@@ -79,6 +82,8 @@ class InferenceReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "architecture": self.architecture,
+            "class_count": self.class_count,
+            "class_names": [self.class_names[i] for i in range(self.class_count)],
             "items": [item.to_dict() for item in self.items],
             "summary": self.summary(),
             "csv": self.csv_path.name if self.csv_path else None,
@@ -147,6 +152,7 @@ class ModelCache:
             stat.st_size,
             metadata.architecture,
             metadata.coral,
+            metadata.class_count,
             str(device),
         )
 
@@ -164,6 +170,7 @@ class ModelCache:
                 metadata.architecture,
                 device=device,
                 coral=metadata.coral,
+                num_classes=metadata.class_count,
             )
             self._items[key] = model
             while len(self._items) > self.max_items:
@@ -178,15 +185,20 @@ class ModelCache:
 DEFAULT_MODEL_CACHE = ModelCache()
 
 
-def write_inference_csv(path: str | Path, items: Iterable[InferenceItem]) -> Path:
+def write_inference_csv(path: str | Path, items: Iterable[InferenceItem], class_names: Mapping[int, str] | None = None) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.DictWriter(handle, fieldnames=INFERENCE_CSV_FIELDS)
+        extras = (["class_count"] + [f"probability_{i}:{class_names[i]}" for i in range(len(class_names))]) if class_names else []
+        writer = csv.DictWriter(handle, fieldnames=[*INFERENCE_CSV_FIELDS, *extras])
         writer.writeheader()
         for item in items:
             payload = item.to_dict()
-            writer.writerow({field: payload[field] for field in INFERENCE_CSV_FIELDS})
+            row = {field: payload[field] for field in INFERENCE_CSV_FIELDS}
+            if class_names:
+                row["class_count"] = len(class_names)
+                row.update({f"probability_{i}:{class_names[i]}": item.probabilities[i] for i in range(len(class_names))})
+            writer.writerow(row)
     return path
 
 
@@ -258,8 +270,8 @@ def run_batch_inference(
     transform = image_transform()
     source_metadata = metadata_by_name(metadata_csv)
     uses_metadata = metadata.architecture.lower().replace("_", "-") == "mlp-resnet18"
-    report = InferenceReport(model_path, metadata.architecture)
-    class_names = dict(metadata.class_names or CLASS_NAMES)
+    class_names = dict(metadata.class_names or classification_labels(metadata.class_count))
+    report = InferenceReport(model_path, metadata.architecture, class_names=class_names, class_count=metadata.class_count)
 
     try:
         with torch.inference_mode():
@@ -272,18 +284,22 @@ def run_batch_inference(
                     logits = model(image_tensor, metadata_tensor)
                 else:
                     logits = model(image_tensor)
-                probabilities = (
-                    coral_logits_to_probs(logits)
-                    if metadata.coral
-                    else torch.softmax(logits, dim=1)
-                )[0]
-                predicted = int(torch.argmax(probabilities).item())
+                if metadata.class_count == 2 and not metadata.coral:
+                    positive = torch.sigmoid(logits.reshape(-1))
+                    probabilities = torch.stack((1 - positive, positive), dim=1)[0]
+                    predicted = int((positive > 0.5).item())
+                else:
+                    probabilities = (
+                        coral_logits_to_probs(logits, num_classes=metadata.class_count)
+                        if metadata.coral else torch.softmax(logits, dim=1)
+                    )[0]
+                    predicted = int(torch.argmax(probabilities).item())
                 numeric = [float(value) for value in probabilities.detach().cpu()]
                 report.items.append(
                     InferenceItem(
                         file=path.name,
                         predicted_index=predicted,
-                        predicted_class=class_names.get(predicted, CLASS_NAMES[predicted]),
+                        predicted_class=class_names[predicted],
                         confidence=numeric[predicted],
                         probabilities=numeric,
                     )
@@ -297,7 +313,7 @@ def run_batch_inference(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    report.csv_path = write_inference_csv(output_dir / "inference_results.csv", report.items)
+    report.csv_path = write_inference_csv(output_dir / "inference_results.csv", report.items, class_names)
     report.zip_path = write_inference_zip(
         output_dir / "inference_results.zip",
         report,

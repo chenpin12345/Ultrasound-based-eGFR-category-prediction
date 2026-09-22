@@ -277,7 +277,11 @@ def test_real_inference_returns_prediction_and_csv_zip_downloads(client, make_im
 
     results_response = client.get(f"/api/jobs/{completed['id']}/results")
     assert results_response.status_code == 200, results_response.text
-    assert results_response.json()["results"]["items"] == result["items"]
+    displayed = results_response.json()["results"]["items"]
+    assert [{key: item[key] for key in result["items"][0]} for item in displayed] == result["items"]
+    assert displayed[0]['file_name'] == 'kidney.jpg'
+    assert client.get(displayed[0]['thumbnail_url']).status_code == 200
+    assert 'evaluation' not in results_response.json()['results']
 
     csv_download = client.get(f"/api/jobs/{completed['id']}/download?format=csv")
     assert csv_download.status_code == 200, csv_download.text

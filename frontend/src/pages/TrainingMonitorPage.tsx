@@ -1,3 +1,4 @@
+import { TrainedModelAction } from '../components/TrainedModelAction'
 import { Activity, Cpu, Download, Gauge, MemoryStick, Pause, Play, Radio, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -21,7 +22,7 @@ export function TrainingMonitorPage() {
   const { jobId: routeJobId } = useParams()
   const navigate = useNavigate()
   const loadJobs = useCallback(async () => listItems<TrainingJob>(await api.listTrainingJobs()), [])
-  const jobs = useAsyncResource(loadJobs)
+  const jobs = useAsyncResource(loadJobs, true, 'training-jobs')
   const [selectedId, setSelectedId] = useState(routeJobId || '')
   const activeId = routeJobId || selectedId
   const [actionBusy, setActionBusy] = useState(false)
@@ -105,6 +106,7 @@ export function TrainingMonitorPage() {
         </div>}
       </StatePanel>
       <ConfirmDialog open={confirmStop} title="安全停止訓練？" description="系統會等待安全時機、保存可恢復 checkpoint，再將狀態標示為 stopped。請勿直接關閉服務。" confirmLabel="停止並保存" busy={actionBusy} onCancel={() => setConfirmStop(false)} onConfirm={() => void stop()} />
+      <TrainedModelAction jobId={activeId} status={status} datasetId={detail.data?.dataset_id} />
     </div>
   )
 }

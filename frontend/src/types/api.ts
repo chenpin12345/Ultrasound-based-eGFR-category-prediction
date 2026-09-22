@@ -253,6 +253,7 @@ export interface TrainingLogEntry {
 export interface ModelInfo {
   id: string
   model_id?: string
+  class_count?: number
   name: string
   architecture?: string
   source?: 'external' | 'training' | string
@@ -279,6 +280,10 @@ export interface InferenceProbability {
 }
 
 export interface InferenceResult {
+  processed_url?: string
+  mask_url?: string
+  overlay_url?: string
+  metadata?: Record<string, string | number>
   id?: string
   file_name: string
   thumbnail_url?: string
@@ -290,6 +295,14 @@ export interface InferenceResult {
 }
 
 export interface JobResults {
+  total?: number
+  offset?: number
+  limit?: number
+  analysis_mode?: 'mlp' | 'image_only'
+  class_count?: number
+  class_names?: string[]
+  model?: { id: string; name?: string; sha256: string; class_count: number }
+  evaluation?: { class_count: number; class_names: string[]; confusion_matrix: number[][]; sample_count: number; dataset_id: string | null; scope: string }
   job_id?: string
   results?: InferenceResult[]
   items?: InferenceResult[]

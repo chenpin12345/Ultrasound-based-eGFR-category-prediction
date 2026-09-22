@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JobEvent } from '../types/api'
+import { invalidateResources } from '../lib/resourceCache'
 
 export type StreamState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed'
 
@@ -44,12 +45,19 @@ export function useJobEvents(url: string | undefined, enabled = true): JobEventS
     let timer: ReturnType<typeof setTimeout> | undefined
     let disposed = false
     let attempts = 0
+    let terminal = false
 
     const receive = (raw: Event) => {
       const event = parseEvent(raw as MessageEvent<string>)
       const cursor = event.id || (event.sequence !== undefined ? String(event.sequence) : '')
       if (cursor) cursorRef.current = cursor
       setEvents((current) => [...current, event].slice(-500))
+      if (['completed', 'failed', 'stopped', 'interrupted', 'cancelled'].includes(event.status || '')) {
+        invalidateResources()
+        terminal = true
+        source?.close()
+        setState('closed')
+      }
     }
 
     const connect = () => {
@@ -68,7 +76,7 @@ export function useJobEvents(url: string | undefined, enabled = true): JobEventS
       }
       source.onerror = () => {
         source?.close()
-        if (disposed) return
+        if (disposed || terminal) return
         attempts += 1
         setState('reconnecting')
         const wait = Math.min(15_000, 1_000 * 2 ** Math.min(attempts, 4))

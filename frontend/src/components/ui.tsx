@@ -3,7 +3,7 @@ import type { HTMLAttributes, ReactNode } from 'react'
 import { statusLabel } from '../lib/format'
 
 export function Card({ className = '', ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={`rounded-2xl border border-slate-200/80 bg-white shadow-panel ${className}`} {...props} />
+  return <div className={`min-w-0 rounded-2xl border border-slate-200/80 bg-white shadow-panel ${className}`} {...props} />
 }
 
 export function PageHeader({ title, description, actions }: { title: string; description: string; actions?: ReactNode }) {

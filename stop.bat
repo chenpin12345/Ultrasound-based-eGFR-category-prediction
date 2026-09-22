@@ -9,7 +9,7 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
-".venv\Scripts\python.exe" scripts\stop_server.py
+"%~dp0.venv\Scripts\python.exe" "%~dp0scripts\stop_server.py"
 if errorlevel 1 (
   echo 無法安全停止服務，請查看上方訊息。
   pause

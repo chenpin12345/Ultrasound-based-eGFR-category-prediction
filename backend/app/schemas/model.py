@@ -17,6 +17,7 @@ class ModelManifest(BaseModel):
     class_names: list[str]
     metadata_columns: list[str] = Field(default_factory=list)
     preprocessing: dict[str, Any] = Field(default_factory=dict)
+    train_stats: dict[str, dict[str, float]] | None = None
 
 
 class ModelRename(BaseModel):

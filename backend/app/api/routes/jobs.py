@@ -42,6 +42,7 @@ MANAGED_CONFIG_KEYS = {
     "unet_model_path", "segmentation_model_path", "mask_model_path",
     "output_path", "archive_path", "metadata_csv", "mask_dir", "feature_csv",
     "source_overrides", "dataset_id", "sample_ids", "operation",
+    "selected_model", "selected_segmenter", "judgment_stage",
 }
 
 
@@ -103,6 +104,12 @@ def _apply_runtime_defaults(db: Session, config: dict) -> None:
 
 
 def _attach_registered_models(db: Session, kind: str, config: dict) -> None:
+    def snapshot(model: ModelRecord) -> dict:
+        metadata_file = safe_resolve(get_settings().models_dir, model.metadata_path)
+        manifest = json.loads(metadata_file.read_text(encoding="utf-8-sig"))
+        return {"id": model.id, "name": model.name, "sha256": model.sha256, "class_count": model.class_count,
+                "class_names": model.class_names, "manifest": manifest}
+
     def selected(task: str, supplied_id: str | None) -> ModelRecord | None:
         model = db.get(ModelRecord, supplied_id) if supplied_id else db.scalar(
             select(ModelRecord).where(ModelRecord.task == task, ModelRecord.active.is_(True))
@@ -118,17 +125,28 @@ def _attach_registered_models(db: Session, kind: str, config: dict) -> None:
         if not model:
             raise AppError(422, "MODEL_REQUIRED", "請選擇與工作類型相容的模型。")
         config["model_path"] = model.weights_path
-        config.setdefault("architecture", model.architecture)
-        config.setdefault("coral", "coral" in model.architecture.lower())
+        config["architecture"] = model.architecture
+        config["coral"] = "coral" in model.architecture.lower()
+        config["selected_model"] = snapshot(model)
     elif kind == "quick_analysis":
+        mode = config.get('analysis_mode')
+        if mode is not None and mode not in {'mlp', 'image_only'}:
+            raise AppError(422, 'INVALID_ANALYSIS_MODE', '不支援的分析模式。')
+        if mode and not config.get('classifier_model_id'):
+            raise AppError(422, 'MODEL_REQUIRED', 'AI判斷需要明確選擇分類模型。')
         classifier = selected("classification", config.pop("classifier_model_id", None))
         segmenter = selected("segmentation", config.pop("unet_model_id", None))
-        if not classifier or not segmenter:
+        if not classifier or (mode != 'image_only' and not segmenter):
             raise AppError(422, "MODEL_REQUIRED", "快速分析需要預設 UNet 與分類模型。")
+        if mode and (('mlp' in classifier.architecture.lower()) != (mode == 'mlp')):
+            raise AppError(422, 'MODEL_MODE_MISMATCH', '模型與分析模式不一致。')
         config["classifier_model_path"] = classifier.weights_path
-        config["unet_model_path"] = segmenter.weights_path
-        config.setdefault("architecture", classifier.architecture)
-        config.setdefault("coral", "coral" in classifier.architecture.lower())
+        config["architecture"] = classifier.architecture
+        config["coral"] = "coral" in classifier.architecture.lower()
+        config["selected_model"] = snapshot(classifier)
+        if segmenter and mode != 'image_only':
+            config["unet_model_path"] = segmenter.weights_path
+            config["selected_segmenter"] = snapshot(segmenter)
 
 
 def _create_job(db: Session, payload: JobCreate, settings: AppSettings) -> Job:
@@ -205,6 +223,7 @@ async def _create_uploaded_job(request: Request, db: Session, settings: AppSetti
     workspace.mkdir(parents=True, exist_ok=False)
     input_paths: list[str] = []
     uploaded_total = 0
+    original_names: list[str] = []
 
     async def save_images(field: str, folder: str) -> list[str]:
         nonlocal uploaded_total
@@ -215,6 +234,9 @@ async def _create_uploaded_job(request: Request, db: Session, settings: AppSetti
         for index, upload in enumerate(uploads):
             clean = sanitize_filename(str(upload.filename), f"image-{index}.jpg")
             suffix = Path(clean).suffix.lower()
+            if kind == 'quick_analysis' and config.get('analysis_mode') and field == 'files':
+                if suffix not in {'.jpg', '.jpeg', '.png', '.jfif'}:
+                    raise AppError(422, 'UNSUPPORTED_IMAGE', 'AI判斷僅接受 JPEG、PNG、JFIF 圖片。')
             target = safe_resolve(input_dir, folder, f"{index:06d}-{clean}")
             if suffix == ".zip" and field == "files":
                 size, _ = await save_upload_file(upload, target, settings.max_upload_bytes)
@@ -234,6 +256,7 @@ async def _create_uploaded_job(request: Request, db: Session, settings: AppSetti
                 for path in extracted:
                     validate_image(path, settings.max_image_pixels)
                     saved.append(relative_path(path, settings.data_dir))
+                    original_names.append(path.name)
                 continue
             if suffix not in IMAGE_EXTENSIONS:
                 await upload.close()
@@ -242,6 +265,8 @@ async def _create_uploaded_job(request: Request, db: Session, settings: AppSetti
             uploaded_total += size
             validate_image(target, settings.max_image_pixels)
             saved.append(relative_path(target, settings.data_dir))
+            if field == 'files':
+                original_names.append(clean)
         return saved
 
     async def save_auxiliary(field: str, filename: str) -> str | None:
@@ -287,6 +312,14 @@ async def _create_uploaded_job(request: Request, db: Session, settings: AppSetti
             "name": sanitize_filename(str(form.get("name") or kind), kind),
         })
         _attach_registered_models(db, kind, config)
+        if kind == 'inference':
+            from ...services.judgment_service import prepare_inference_upload
+            prepare_inference_upload(config, input_paths, original_names, workspace, settings.data_dir)
+        if kind == 'quick_analysis' and config.get('analysis_mode'):
+            if overrides or mask_paths or metadata_csv or feature_csv:
+                raise AppError(422, 'JUDGMENT_INPUT_CONFLICT', 'AI判斷使用逐張基本資料，不接受混合其他輸入產物。')
+            from ...services.judgment_service import prepare_upload
+            prepare_upload(config, input_paths, original_names, workspace, settings.data_dir)
         job = Job(
             id=job_id,
             dataset_id=None,
@@ -322,19 +355,27 @@ async def create_job(request: Request, db: Session = Depends(get_db), settings: 
     if content_type.startswith("multipart/form-data"):
         return job_out(await _create_uploaded_job(request, db, settings))
     try:
-        payload = JobCreate.model_validate(await request.json())
+        raw = await request.json()
+    except ValueError as exc:
+        raise AppError(422, "INVALID_JOB_REQUEST", "工作請求格式錯誤。") from exc
+    if isinstance(raw, dict) and "input_sources" in raw:
+        from .workflow import create_source_job
+        return create_source_job(db, settings, raw)
+    try:
+        payload = JobCreate.model_validate(raw)
     except Exception as exc:
         raise AppError(422, "INVALID_JOB_REQUEST", "工作請求格式錯誤。") from exc
     return job_out(_create_job(db, payload, settings))
 
 
-@router.get("", response_model=Page[JobOut])
+@router.get("")
 def list_jobs(
     kind: str | None = None,
     dataset_id: str | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
+    view: str = Query(default='full', pattern='^(full|summary)$'),
     db: Session = Depends(get_db),
 ) -> dict:
     query = select(Job).where(Job.kind != "training")
@@ -346,13 +387,30 @@ def list_jobs(
     if status_filter:
         query, count_query = query.where(Job.status == status_filter), count_query.where(Job.status == status_filter)
     total = db.scalar(count_query) or 0
+    if view == 'summary':
+        # SQLite extracts just the small listing fields; never hydrate all predictions.
+        columns = [Job.id, Job.dataset_id, Job.kind, Job.status, Job.progress,
+                   Job.created_at, Job.updated_at, Job.started_at, Job.completed_at,
+                   Job.error_code, Job.error_message, Job.stop_requested,
+                   func.json_extract(Job.config_json, '$.name').label('name'),
+                   func.coalesce(func.json_array_length(Job.result_json, '$.items'),
+                                 func.json_array_length(Job.result_json, '$.inference.items'),
+                                 func.json_extract(Job.result_json, '$.rows'), 0).label('result_count')]
+        rows = db.execute(query.with_only_columns(*columns).order_by(Job.created_at.desc()).offset(offset).limit(limit)).mappings()
+        return {'items': [sanitize_public_json(dict(row)) for row in rows], 'total': total, 'offset': offset, 'limit': limit}
     items = db.scalars(query.order_by(Job.created_at.desc()).offset(offset).limit(limit)).all()
     return {"items": [job_out(item) for item in items], "total": total, "offset": offset, "limit": limit}
 
 
-@router.get("/{job_id}", response_model=JobOut)
-def get_job(job_id: str, db: Session = Depends(get_db)) -> dict:
-    return job_out(_job_or_404(db, job_id))
+@router.get("/{job_id}")
+def get_job(job_id: str, db: Session = Depends(get_db), view: str = Query(default='full', pattern='^(full|summary)$')) -> dict:
+    job = _job_or_404(db, job_id)
+    if view == 'full':
+        return job_out(job)
+    output = {field: getattr(job, field) for field in ('id','dataset_id','kind','status','progress','error_code','error_message','stop_requested','created_at','updated_at','started_at','completed_at')}
+    output['config_json'] = {key:value for key,value in (job.config_json or {}).items() if key not in ('input_paths','basic_metadata','source_overrides')}
+    output['result_json'] = None
+    return sanitize_public_json(output)
 
 
 def _action(job_id: str, expected_kind: str, payload: JobAction, db: Session) -> dict:
@@ -470,13 +528,34 @@ def _preview_file_url(job_id: str, relative_file: object, workspace: Path) -> st
 @router.get("/{job_id}/results")
 def job_results(
     job_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int | None = Query(default=None, ge=1, le=200),
     db: Session = Depends(get_db),
     settings: AppSettings = Depends(get_settings),
 ) -> dict:
     job = _job_or_404(db, job_id)
     if job.status not in TERMINAL_STATUSES:
         raise AppError(409, "JOB_NOT_FINISHED", "工作尚未完成。")
-    results = sanitize_public_json(job.result_json or {})
+    payload = dict(job.result_json or {})
+    if limit is not None:
+        nested = 'inference' in payload
+        target = dict(payload['inference']) if nested else payload
+        all_items = target.get('items', [])
+        if isinstance(all_items, list):
+            workspace = safe_resolve(settings.data_dir, job.workspace_path)
+            manifest = workspace / ('judgment-results.json' if job.kind == 'quick_analysis' else 'handoff.json')
+            if manifest.is_file() and job.kind in ('inference','quick_analysis'):
+                from ...services.display_cache import display_json
+                entries = {Path(e['image']).name:e for e in display_json(manifest).get('entries',[])}
+                if any(e.get('class_index') is not None for e in entries.values()):
+                    target['evaluation'] = _inference_evaluation(target, entries, job.dataset_id)
+            target.update(items=all_items[offset:offset+limit], total=len(all_items), offset=offset, limit=limit)
+        if nested:
+            payload['inference'] = target
+        if isinstance(payload.get('previews'), list):
+            previews = payload['previews']
+            payload.update(previews=previews[offset:offset+limit], total=len(previews), offset=offset, limit=limit)
+    results = sanitize_public_json(payload)
     raw_previews = results.pop("previews", []) if isinstance(results, dict) else []
     workspace = safe_resolve(settings.data_dir, job.workspace_path)
     mask_previews: list[dict[str, str]] = []
@@ -496,7 +575,61 @@ def job_results(
                 )
     if isinstance(results, dict) and mask_previews:
         results["mask_previews"] = mask_previews
+    if job.kind == 'quick_analysis' and (workspace / 'judgment-results.json').is_file():
+        bundle = json.loads((workspace / 'judgment-results.json').read_text(encoding='utf-8'))
+        entries = {Path(e['image']).name: e for e in bundle['entries']}
+        for item in results.get('inference', {}).get('items', []):
+            entry = entries.get(item.get('file'))
+            if not entry:
+                continue
+            item['file_name'] = entry['display_name']
+            item['metadata'] = entry.get('metadata', {})
+            for role, key in [('thumbnail_url', 'original_image'), ('processed_url', 'image'),
+                              ('mask_url', 'mask'), ('overlay_url', 'overlay_image')]:
+                if entry.get(key):
+                    path = safe_resolve(settings.data_dir, entry[key])
+                    if path.is_relative_to(workspace):
+                        item[role] = _preview_file_url(job.id, path.relative_to(workspace).as_posix(), workspace)
+        if limit is None and any(e.get('class_index') is not None for e in entries.values()):
+            results['inference']['evaluation'] = _inference_evaluation(results['inference'], entries, job.dataset_id)
+    if job.kind == "inference" and isinstance(results, dict) and results.get("items"):
+        manifest_path = workspace / "handoff.json"
+        if manifest_path.is_file():
+            bundle = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entries = {Path(e["image"]).name: e for e in bundle.get("entries", [])}
+            for item in results["items"]:
+                entry = entries.get(item.get("file"))
+                if not entry:
+                    continue
+                item["file_name"] = entry.get("display_name") or item["file"]
+                path = safe_resolve(settings.data_dir, entry["image"])
+                if path.is_relative_to(workspace):
+                    item["thumbnail_url"] = _preview_file_url(job.id, path.relative_to(workspace).as_posix(), workspace)
+            if limit is None and any(e.get('class_index') is not None for e in entries.values()):
+                results["evaluation"] = _inference_evaluation(results, entries, job.dataset_id)
     return {"job_id": job.id, "status": job.status, "results": results}
+
+
+def _inference_evaluation(results: dict, entries: dict, dataset_id: str | None) -> dict:
+    """Display-only aggregation of stored predictions; original labels stay intact."""
+    from ...ml.contracts import classification_labels, remap_five_class
+    count = int(results.get("class_count", 5))
+    labels = results.get("class_names") or list(classification_labels(count).values())
+    matrix = [[0] * count for _ in range(count)]
+    matched = 0
+    for item in results.get("items", []):
+        original = entries.get(item.get("file"), {}).get("class_index")
+        predicted = item.get("predicted_index")
+        if original not in range(5) or predicted not in range(count):
+            continue
+        truth = remap_five_class(original, count)
+        item["evaluation_class_index"] = truth
+        item["original_five_class_index"] = original
+        matrix[truth][predicted] += 1
+        matched += 1
+    return {"class_count": count, "class_names": labels, "confusion_matrix": matrix,
+            "sample_count": matched, "dataset_id": dataset_id,
+            "scope": "本批已標記資料；可能含訓練資料，不是獨立測試，也不是海報重現成績。"}
 
 
 @router.get("/{job_id}/files/{file_path:path}")
@@ -533,7 +666,7 @@ def download_job(
     job = _job_or_404(db, job_id)
     result = job.result_json or {}
     archive_path = (
-        (result.get("csv") or result.get("output_csv"))
+        (result.get("csv") or result.get("output_csv") or result.get('inference', {}).get('csv'))
         if format == "csv"
         else (result.get("archive_path") or result.get("zip") or result.get("download"))
     )

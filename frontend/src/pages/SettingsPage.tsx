@@ -22,9 +22,10 @@ export function SettingsPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
-  useEffect(() => { if (remote.data) setSettings({ ...DEFAULT_SETTINGS, ...remote.data }) }, [remote.data])
+  const [dirty, setDirty] = useState(false)
+  useEffect(() => { if (remote.data && !dirty) setSettings({ ...DEFAULT_SETTINGS, ...remote.data }) }, [remote.data, dirty])
   const errors = useMemo(() => validateSettings(settings), [settings])
-  const update = <K extends keyof SystemSettings>(key: K, value: SystemSettings[K]) => { setSettings((current) => ({ ...current, [key]: value })); setSaved(false) }
+  const update = <K extends keyof SystemSettings>(key: K, value: SystemSettings[K]) => { setSettings((current) => ({ ...current, [key]: value })); setDirty(true); setSaved(false) }
 
   const save = async () => {
     if (Object.keys(errors).length) return
@@ -32,6 +33,8 @@ export function SettingsPage() {
     try {
       const updated = await api.updateSettings(settings)
       setSettings({ ...DEFAULT_SETTINGS, ...updated })
+      remote.setData(updated)
+      setDirty(false)
       setSaved(true)
     } catch (reason) { setError(humanApiError(reason)) } finally { setBusy(false) }
   }
