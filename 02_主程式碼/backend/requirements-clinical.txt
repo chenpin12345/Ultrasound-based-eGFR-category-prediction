@@ -1,0 +1,4 @@
+alembic==1.16.5
+argon2-cffi==25.1.0
+cryptography==46.0.2
+reportlab==4.4.4

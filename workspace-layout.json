@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "code": "02_主程式碼",
+  "research_data": "03_模型與影像資料/research/data",
+  "models": "03_模型與影像資料/research/models",
+  "reference_features": "03_模型與影像資料/research/reference_features",
+  "clinical": "03_模型與影像資料/clinical",
+  "reports": "04_醫師報告",
+  "runtime": "03_模型與影像資料/runtime",
+  "require_existing_databases": true
+}

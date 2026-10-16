@@ -1,0 +1,63 @@
+import { afterEach, expect, it, vi } from 'vitest'
+import { activitySnapshot, clearResourceCache, FRESH_MS, invalidateResources, loadResource, resourceSnapshot, subscribeActivity, subscribeResource } from './resourceCache'
+afterEach(() => { clearResourceCache(); vi.useRealTimers() })
+it('shares requests and reuses data only while fresh', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000)
+  const loader=vi.fn().mockResolvedValue(['model'])
+  await Promise.all([loadResource('models',loader),loadResource('models',loader)])
+  await loadResource('models',loader)
+  expect(loader).toHaveBeenCalledTimes(1)
+  vi.setSystemTime(1000+FRESH_MS+1); await loadResource('models',loader)
+  expect(loader).toHaveBeenCalledTimes(2)
+  await loadResource('models',loader,true); expect(loader).toHaveBeenCalledTimes(3)
+})
+it('keeps prior data on background errors and isolates keys', async () => {
+  await loadResource('a',async()=>['a']); await loadResource('b',async()=>['b'])
+  await loadResource('a',async()=>{throw new Error('offline')},true)
+  expect(resourceSnapshot('a').data).toEqual(['a'])
+  expect(resourceSnapshot('a').error).toBe('offline')
+  expect(resourceSnapshot('b').data).toEqual(['b'])
+})
+it('discards an invalidated in-flight reply and notifies observers', async () => {
+  let finish!: (value: string)=>void
+  const unsubscribe=subscribeResource('x',vi.fn())
+  const loader=vi.fn().mockImplementationOnce(()=>new Promise<string>(resolve=>{finish=resolve})).mockResolvedValue('new')
+  const old=loadResource('x',loader)
+  invalidateResources(false)
+  await Promise.resolve(); await Promise.resolve()
+  finish('old'); await old
+  expect(resourceSnapshot('x').data).toBe('new')
+  unsubscribe()
+})
+it('aborts only after the last consumer unmounts', async () => {
+  const one=subscribeResource('x',()=>{}), two=subscribeResource('x',()=>{})
+  let signal!: AbortSignal
+  const pending=loadResource('x',s=>{signal=s; return new Promise(resolve=>s.addEventListener('abort',()=>resolve('late')))})
+  one(); expect(signal.aborted).toBe(false)
+  two(); expect(signal.aborted).toBe(true)
+  await pending; expect(resourceSnapshot('x').data).toBeUndefined()
+})
+it('retains the actual read time through invalidation and failed background refresh', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000)
+  const unsubscribe=subscribeResource('models',()=>{})
+  const loader=vi.fn().mockResolvedValueOnce(['model']).mockRejectedValue(new Error('offline'))
+  await loadResource('models',loader)
+  vi.setSystemTime(2000); invalidateResources(false)
+  await Promise.resolve(); await Promise.resolve()
+  expect(resourceSnapshot('models')).toMatchObject({data:['model'],updatedAt:0,lastSuccessAt:1000,error:'offline'})
+  expect(JSON.parse(activitySnapshot())).toEqual({updating:false,error:'offline',oldestReadAt:1000})
+  vi.setSystemTime(3000); await loadResource('models',async()=>['model'],true)
+  expect(JSON.parse(activitySnapshot())).toEqual({updating:false,error:'',oldestReadAt:3000})
+  unsubscribe()
+})
+it('reports only visible consumers and notifies on navigation between cached pages', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(1000)
+  await loadResource('old',async()=>['old'])
+  vi.setSystemTime(2000); await loadResource('current',async()=>['current'])
+  const listener=vi.fn(),stopActivity=subscribeActivity(listener)
+  const stopOld=subscribeResource('old',()=>{}),stopCurrent=subscribeResource('current',()=>{})
+  expect(JSON.parse(activitySnapshot()).oldestReadAt).toBe(1000)
+  stopOld(); expect(JSON.parse(activitySnapshot()).oldestReadAt).toBe(2000)
+  stopCurrent(); expect(JSON.parse(activitySnapshot()).oldestReadAt).toBeNull()
+  expect(listener).toHaveBeenCalledTimes(4); stopActivity()
+})

@@ -1,48 +1,76 @@
-.vscode/
-.idea/
-.venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-**/__pycache__/
-*.py[cod]
+# ===== 隱私保護：醫療資料、影像、模型與報告一律不進版本控制 =====
+03_模型與影像資料/**
+!03_模型與影像資料/**/
+!03_模型與影像資料/**/README.md
+04_醫師報告/**
+!04_醫師報告/README.md
+01_Codex/驗證報告/
+.maintenance/
 
-# Local configuration and runtime state
-.env
-!.env.example
-data/
-logs/
-*.log
-*.pid
-*.db
-*.db-*
-*.sqlite
-*.sqlite3
-
-# Medical/research inputs and generated artifacts must remain local
-IMG/
-model/
-models/
-results/
-outputs/
-training/
+# 影像、權重、資料表與封裝檔
+*.jpg
+*.jpeg
+*.jfif
+*.png
+*.bmp
+*.dcm
+*.pdf
+*.mp4
 *.csv
 *.tsv
 *.xlsx
 *.xls
 *.zip
+*.rar
+*.7z
 *.pth
 *.pt
 *.pkl
 *.onnx
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.pem
+*.key
+*.enc
+*.exe
+*.dll
 
-# Frontend dependencies and builds
-frontend/node_modules/
-frontend/.offline-esbuild/
+# 本機設定與執行期狀態
+.env
+!.env.example
+logs/
+*.log
+*.pid
+
+# 交付工具建置產物（可用 02_主程式碼/scripts/build_image_sender.ps1 重建）
+02_主程式碼/delivery/
+
+# 介紹影片的截圖、成品與快取（截圖含真實超音波影像）
+05_介紹影片/assets/shots/
+05_介紹影片/assets/pdf/
+05_介紹影片/renders/
+05_介紹影片/.hyperframes/
+05_介紹影片/.thumbnails/
+05_介紹影片/.waveform-cache/
+05_介紹影片/node_modules/
+
+# Python / Node / IDE
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
 frontend/dist/
 frontend/coverage/
-
-# Python/build outputs
+frontend/.offline-esbuild/
 build/
 dist/
 *.egg-info/
+.vscode/
+.idea/
+.claude/

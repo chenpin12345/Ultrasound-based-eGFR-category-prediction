@@ -1,0 +1,23 @@
+services:
+  isu-ai-kua:
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ISU_AI_DATA_DIR: /workspace/data
+      ISU_AI_MODELS_DIR: /workspace/models
+      ISU_AI_CLINICAL_DIR: /workspace/clinical
+      ISU_AI_REPORTS_DIR: /workspace/reports
+      ISU_AI_RUNTIME_DIR: /workspace/runtime
+      ISU_AI_REFERENCE_FEATURES_DIR: /workspace/reference_features
+      ISU_AI_CPU_WORKERS: "2"
+      ISU_AI_GPU_WORKERS: "1"
+    volumes:
+      - ../03_模型與影像資料/research/data:/workspace/data
+      - ../03_模型與影像資料/research/models:/workspace/models
+      - ../03_模型與影像資料/research/reference_features:/workspace/reference_features:ro
+      - ../03_模型與影像資料/clinical:/workspace/clinical
+      - ../03_模型與影像資料/runtime:/workspace/runtime
+      - ../04_醫師報告:/workspace/reports
+    restart: unless-stopped
