@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-paper font-sans text-[15px] leading-relaxed text-ink antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 格狀版面的子元素預設會被內容撐寬（例如可橫向捲動的縮圖列、圖表），在手機上造成整頁橫向捲動 */
+  .grid > * {
+    min-width: 0;
+  }
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-steel;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

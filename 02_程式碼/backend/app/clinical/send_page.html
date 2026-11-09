@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>傳送影像到腎超工作台</title>
+<style>
+  :root { --ink:#1B2A38; --soft:#4A5A68; --faint:#7A8894; --paper:#EEF2F1; --line:#D3DCDB; --steel:#2E6A84; --ok:#2F7A55; --alert:#B03A2E; --amber:#A8661A; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Microsoft JhengHei UI","Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif; background:var(--paper); color:var(--ink); }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  p.lead { color:var(--soft); margin:0 0 20px; font-size:14px; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  label { display:block; font-size:13px; color:var(--soft); margin:8px 0 4px; }
+  input, select { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  button { font:inherit; padding:8px 14px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.primary { background:var(--steel); color:#fff; border-color:var(--steel); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .drop { border:2px dashed var(--line); border-radius:8px; padding:24px; text-align:center; color:var(--soft); }
+  .drop.over { border-color:var(--steel); background:#E3EEF2; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); }
+  .ok { color:var(--ok); } .bad { color:var(--alert); } .warn { color:var(--amber); }
+  .msg { font-size:14px; margin-top:8px; }
+  .code { font-size:20px; letter-spacing:6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>傳送影像到腎超工作台</h1>
+  <p class="lead">這台電腦（A）不用安裝程式。輸入 B 電腦畫面上的配對碼，選擇影像後傳送；B 收到後會立刻去識別化並自動分析。</p>
+
+  <section>
+    <h2>1. 配對</h2>
+    <p class="msg" style="margin-top:0">第一次開這個網頁時，瀏覽器會提醒「憑證不受信任」：請核對網址列的憑證指紋和 B 電腦畫面上的一致，再按繼續。</p>
+    <label for="code">B 電腦畫面上的 6 位數配對碼</label>
+    <div class="row"><input id="code" class="code" inputmode="numeric" maxlength="6" autocomplete="off"><button id="pairBtn" class="primary">配對</button></div>
+    <p id="pairMsg" class="msg"></p>
+  </section>
+
+  <section>
+    <h2>2. 病例資料</h2>
+    <label for="list">示範清單（選填）：匯入「示範影像包」裡的 示範清單.json，會自動帶入每張的病例代碼、側別、像素間距與臨床資料</label>
+    <input id="list" type="file" accept=".json,application/json">
+    <p id="listMsg" class="msg"></p>
+    <div id="manual">
+      <div class="row">
+        <div><label for="case">病例代碼（可留空，自動編號）</label><input id="case" maxlength="40"></div>
+        <div><label for="title">檢查名稱</label><input id="title" maxlength="80" value="腎臟超音波"></div>
+      </div>
+      <div class="row">
+        <div><label for="age">年齡（選填）</label><input id="age" type="number" min="0" max="130"></div>
+        <div><label for="sex">性別（選填）</label><select id="sex"><option value="">不填</option><option value="M">男</option><option value="F">女</option></select></div>
+        <div><label for="dm">糖尿病</label><select id="dm"><option value="unknown">不明</option><option value="yes">有</option><option value="no">無</option></select></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 選擇影像並傳送</h2>
+    <div id="drop" class="drop">把 JPG／PNG 影像拖到這裡，或 <input id="files" type="file" accept=".jpg,.jpeg,.png" multiple style="width:auto"></div>
+    <p class="msg">每張最多 32 MB。檔名不會被 B 電腦保存。</p>
+    <div class="row" style="margin-top:8px"><button id="sendBtn" class="primary" disabled>傳送</button><button id="retryBtn" disabled>重送失敗的影像</button></div>
+    <p id="sendMsg" class="msg"></p>
+    <table><thead><tr><th>#</th><th>病例</th><th>大小</th><th>狀態</th></tr></thead><tbody id="rows"></tbody></table>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let token = null, demoList = null, files = [], groups = [];
+  const LABEL = { received: '已收到', duplicate: '重複略過', failed: '失敗', sending: '傳送中…', waiting: '等待中', hashing: '計算中…' };
+
+  // SHA-256：瀏覽器有 crypto.subtle 就用；沒有時用下面的純 JavaScript 版本
+  async function sha256(buf) {
+    if (window.crypto && crypto.subtle) {
+      const d = await crypto.subtle.digest('SHA-256', buf);
+      return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    return sha256js(new Uint8Array(buf));
+  }
+  function sha256js(data) {
+    const K = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+    const H = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+    const len = data.length, total = ((len + 9 + 63) >> 6) << 6, m = new Uint8Array(total);
+    m.set(data); m[len] = 0x80;
+    const dv = new DataView(m.buffer); dv.setUint32(total - 4, (len * 8) >>> 0); dv.setUint32(total - 8, Math.floor(len / 0x20000000));
+    const w = new Uint32Array(64), r = (x, n) => (x >>> n) | (x << (32 - n));
+    for (let o = 0; o < total; o += 64) {
+      for (let i = 0; i < 16; i++) w[i] = dv.getUint32(o + i * 4);
+      for (let i = 16; i < 64; i++) { const s0 = r(w[i-15],7) ^ r(w[i-15],18) ^ (w[i-15] >>> 3), s1 = r(w[i-2],17) ^ r(w[i-2],19) ^ (w[i-2] >>> 10); w[i] = (w[i-16] + s0 + w[i-7] + s1) >>> 0; }
+      let [a,b,c,d,e,f,g,h] = H;
+      for (let i = 0; i < 64; i++) {
+        const t1 = (h + (r(e,6) ^ r(e,11) ^ r(e,25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0, t2 = ((r(a,2) ^ r(a,13) ^ r(a,22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+        h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+      }
+      H[0]+=a; H[1]+=b; H[2]+=c; H[3]+=d; H[4]+=e; H[5]+=f; H[6]+=g; H[7]+=h;
+    }
+    return [...H].map((x) => x.toString(16).padStart(8, '0')).join('');
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body.error && body.error.message) || ('連線錯誤（' + res.status + '）'));
+    return body;
+  }
+
+  $('pairBtn').onclick = async () => {
+    try {
+      token = (await api('/pair', { method: 'POST', headers: { 'X-Pair-Code': $('code').value.trim() } })).token;
+      $('pairMsg').innerHTML = '<span class="ok">已配對。</span>';
+      refresh();
+    } catch (e) { $('pairMsg').innerHTML = '<span class="bad">' + e.message + '</span>'; }
+  };
+
+  $('list').onchange = async (ev) => {
+    const f = ev.target.files[0];
+    if (!f) { demoList = null; $('manual').style.display = ''; return; }
+    try {
+      const data = JSON.parse(await f.text());
+      if (!Array.isArray(data.items)) throw new Error('格式不正確');
+      demoList = new Map(data.items.map((i) => [i.file, i]));
+      $('listMsg').innerHTML = '<span class="ok">已匯入 ' + data.items.length + ' 張的資料；每個病例代碼會建立一筆檢查。</span>';
+      $('manual').style.display = 'none';
+    } catch (e) { demoList = null; $('listMsg').innerHTML = '<span class="bad">示範清單讀不出來：' + e.message + '</span>'; }
+    refresh();
+  };
+
+  function addFiles(list) {
+    for (const f of list) if (/\.(jpe?g|png)$/i.test(f.name)) files.push({ file: f, status: 'waiting', message: '' });
+    refresh();
+  }
+  $('files').onchange = (ev) => addFiles(ev.target.files);
+  const drop = $('drop');
+  drop.ondragover = (ev) => { ev.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (ev) => { ev.preventDefault(); drop.classList.remove('over'); addFiles(ev.dataTransfer.files); };
+
+  function caseOf(f) { const d = demoList && demoList.get(f.file.name); return d ? d.case_code : ($('case').value.trim() || '（自動編號）'); }
+  function refresh() {
+    $('rows').innerHTML = files.map((f, i) => {
+      const cls = f.status === 'received' ? 'ok' : f.status === 'failed' ? 'bad' : f.status === 'duplicate' ? 'warn' : '';
+      return '<tr><td>' + (i + 1) + '</td><td>' + caseOf(f) + '</td><td>' + (f.file.size / 1024 / 1024).toFixed(1) + ' MB</td><td class="' + cls + '">' + (LABEL[f.status] || f.status) + (f.message ? '：' + f.message : '') + '</td></tr>';
+    }).join('');
+    $('sendBtn').disabled = !token || !files.some((f) => f.status === 'waiting');
+    $('retryBtn').disabled = !token || !files.some((f) => f.status === 'failed');
+  }
+
+  async function sendOne(group, f, seq) {
+    const d = demoList && demoList.get(f.file.name);
+    f.status = 'hashing'; refresh();
+    const buf = await f.file.arrayBuffer();
+    const hash = await sha256(buf);
+    f.status = 'sending'; refresh();
+    const headers = { 'Content-Type': 'application/octet-stream', 'X-SHA256': hash };
+    if (d) { headers['X-Demo'] = '1'; if (d.side) headers['X-Side'] = d.side; if (d.pixel_spacing_mm) headers['X-Spacing'] = String(d.pixel_spacing_mm); }
+    try {
+      const r = await api('/batches/' + group.batch_id + '/items/' + seq, { method: 'PUT', headers, body: buf });
+      f.status = r.status; f.message = '';
+    } catch (e) { f.status = 'failed'; f.message = e.message; }
+    refresh();
+  }
+
+  async function send(onlyFailed) {
+    $('sendBtn').disabled = $('retryBtn').disabled = true;
+    try {
+      if (!onlyFailed) {
+        // 依病例代碼分組：一組＝一次傳送＝一筆檢查
+        const byCase = new Map();
+        for (const f of files.filter((x) => x.status === 'waiting')) {
+          const d = demoList && demoList.get(f.file.name);
+          if (demoList && !d) { f.status = 'failed'; f.message = '示範清單裡沒有這個檔案'; continue; }
+          const key = d ? d.case_code : '__manual__';
+          if (!byCase.has(key)) byCase.set(key, { data: d ? { case_code: d.case_code, age: d.age, sex: d.sex, diabetes: d.diabetes, demo: true } : { case_code: $('case').value.trim(), age: $('age').value || null, sex: $('sex').value || null, diabetes: $('dm').value, title: $('title').value }, files: [] });
+          byCase.get(key).files.push(f);
+        }
+        for (const g of byCase.values()) {
+          const b = await api('/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(g.data) });
+          g.batch_id = b.batch_id; g.exam_id = b.exam_id; g.case_code = b.case_code; g.seq = 0;
+          g.files.forEach((f) => { f.group = g; f.seq = ++g.seq; });
+          groups.push(g);
+        }
+      }
+      for (const f of files.filter((x) => (onlyFailed ? x.status === 'failed' : x.status === 'waiting') && x.group)) await sendOne(f.group, f, f.seq);
+      const pending = files.some((f) => f.status === 'failed');
+      if (!pending) {
+        for (const g of groups.filter((x) => !x.finished)) { await api('/batches/' + g.batch_id + '/finish', { method: 'POST' }); g.finished = true; }
+        $('sendMsg').innerHTML = '<span class="ok">傳送完成：B 電腦正在去識別化與分析（' + groups.map((g) => g.case_code).join('、') + '）。</span>';
+      } else {
+        $('sendMsg').innerHTML = '<span class="bad">有影像傳送失敗，請按「重送失敗的影像」。全部成功後才會開始分析。</span>';
+      }
+    } catch (e) { $('sendMsg').innerHTML = '<span class="bad">' + e.message + '</span>'; }
+    refresh();
+  }
+  $('sendBtn').onclick = () => send(false);
+  $('retryBtn').onclick = () => send(true);
+})();
+</script>
+</body>
+</html>

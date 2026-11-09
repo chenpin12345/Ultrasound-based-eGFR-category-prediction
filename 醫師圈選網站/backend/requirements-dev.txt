@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest==8.4.1
+httpx==0.28.1
+numpy==2.2.6  # 只有測試用；網站本身不需要
+pyinstaller==6.16.0

@@ -1,0 +1,7 @@
+# M2 訓練與標註工具（CUDA 12.8 版 PyTorch，支援 RTX 50 系列）。setup.bat 會在 requirements.txt 之後安裝。
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+transformers==5.20.2
+huggingface_hub==2.3.0
+nnunetv2==2.8.1

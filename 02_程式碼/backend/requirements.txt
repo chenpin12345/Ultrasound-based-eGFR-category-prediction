@@ -1,0 +1,20 @@
+# 後端執行套件。訓練用的 PyTorch（CUDA 版）、MedSAM 與 nnU-Net 在 requirements-gpu.txt。
+fastapi==0.116.1
+starlette==0.47.3
+uvicorn==0.35.0
+pydantic==2.11.7
+pydantic-settings==2.10.1
+SQLAlchemy==2.0.41
+alembic==1.16.5
+python-multipart==0.0.20
+numpy==2.2.6
+scipy==1.15.3
+Pillow==11.3.0
+opencv-python==4.11.0.86
+scikit-image==0.25.2
+scikit-learn==1.7.1
+openpyxl==3.1.5
+psutil==7.0.0
+rapidocr-onnxruntime==1.4.4
+cryptography==50.0.2
+reportlab==5.1.0

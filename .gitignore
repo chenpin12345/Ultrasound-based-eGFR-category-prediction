@@ -1,17 +1,38 @@
-# ===== 隱私保護：醫療資料、影像、模型與報告一律不進版本控制 =====
-03_模型與影像資料/**
-!03_模型與影像資料/**/
-!03_模型與影像資料/**/README.md
-04_醫師報告/**
-!04_醫師報告/README.md
-01_Codex/驗證報告/
-.maintenance/
+# ===== 隱私保護：原始影像、病人資料、模型、匯入與備份一律不進版本控制 =====
+# 原始影像（畫面上有姓名、病歷號）與病人表
+IMG_original/
+
+# 資料區：只保留各資料夾的 說明.txt
+03_資料/**
+!03_資料/**/
+!03_資料/說明.txt
+!03_資料/*/說明.txt
+04_模型/**
+!04_模型/**/
+!04_模型/說明.txt
+!04_模型/*/說明.txt
+05_醫師端/**
+!05_醫師端/**/
+!05_醫師端/說明.txt
+06_匯入區/**
+!06_匯入區/**/
+!06_匯入區/說明.txt
+07_備份/**
+!07_備份/**/
+!07_備份/說明.txt
+08_系統/**
+!08_系統/**/
+!08_系統/說明.txt
+
+# 醫師圈選網站發布版：內含 975 張原始影像與執行檔
+醫師圈選網站/發布版/
 
 # 影像、權重、資料表與封裝檔
 *.jpg
 *.jpeg
 *.jfif
 *.png
+!01_計畫與文件/運作流程圖.png
 *.bmp
 *.dcm
 *.pdf
@@ -27,6 +48,8 @@
 *.pt
 *.pkl
 *.onnx
+*.npy
+*.npz
 *.sqlite
 *.sqlite3
 *.sqlite3-*
@@ -37,6 +60,7 @@
 *.enc
 *.exe
 *.dll
+*.pyd
 
 # 本機設定與執行期狀態
 .env
@@ -44,18 +68,6 @@
 logs/
 *.log
 *.pid
-
-# 交付工具建置產物（可用 02_主程式碼/scripts/build_image_sender.ps1 重建）
-02_主程式碼/delivery/
-
-# 介紹影片的截圖、成品與快取（截圖含真實超音波影像）
-05_介紹影片/assets/shots/
-05_介紹影片/assets/pdf/
-05_介紹影片/renders/
-05_介紹影片/.hyperframes/
-05_介紹影片/.thumbnails/
-05_介紹影片/.waveform-cache/
-05_介紹影片/node_modules/
 
 # Python / Node / IDE
 .venv/
@@ -65,11 +77,10 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 node_modules/
-frontend/dist/
-frontend/coverage/
-frontend/.offline-esbuild/
-build/
 dist/
+build/
+coverage/
+*.tsbuildinfo
 *.egg-info/
 .vscode/
 .idea/
